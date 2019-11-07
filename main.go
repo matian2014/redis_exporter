@@ -8,6 +8,7 @@ import (
 	"os"
 	"runtime"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
@@ -37,7 +38,8 @@ func getEnvBool(key string) (res bool) {
 
 func main() {
 	var (
-		redisAddr           = flag.String("redis.addr", getEnv("REDIS_ADDR", "redis://localhost:6379"), "Address of the Redis instance to scrape")
+		sentinelAddrs       = flag.String("sentinel.addrs", getEnv("SENTINEL_ADDRS", "localhost:26379"), "Address of the Redis sentinels spilt by ','")
+		redisMaster         = flag.String("redis.master", getEnv("REDIS_MASTER", "mymaster"), "Redis master name the sentinels monitoring")
 		redisPwd            = flag.String("redis.password", getEnv("REDIS_PASSWORD", ""), "Password of the Redis instance to scrape")
 		namespace           = flag.String("namespace", getEnv("REDIS_EXPORTER_NAMESPACE", "redis"), "Namespace for metrics")
 		checkKeys           = flag.String("check-keys", getEnv("REDIS_EXPORTER_CHECK_KEYS", ""), "Comma separated list of key-patterns to export value and length/size, searched for with SCAN")
@@ -112,8 +114,22 @@ func main() {
 		registry = prometheus.DefaultRegisterer.(*prometheus.Registry)
 	}
 
-	exp, err := NewRedisExporter(
-		*redisAddr,
+	log.Infof("Redis sentinels addresses to find redis master address: %s", *sentinelAddrs)
+	*sentinelAddrs = strings.Trim(*sentinelAddrs, " ")
+
+	if *sentinelAddrs == "" {
+		log.Fatalf("Error read redis sentinels addresses that should be spilt by ',': %s", *sentinelAddrs)
+	}
+
+	sentinelAddrsArray := strings.Split(*sentinelAddrs, ",")
+	if len(sentinelAddrsArray) == 0 {
+		log.Fatalf("Error read redis sentinels addresses that should be spilt by ',': %s", *sentinelAddrs)
+	}
+	log.Infof("Redis sentinels monitoring master name to find redis master address: %s", *redisMaster)
+
+	exp, err := NewRedisExporterBySentinel(
+		sentinelAddrsArray,
+		*redisMaster,
 		ExporterOptions{
 			Password:            *redisPwd,
 			Namespace:           *namespace,
@@ -137,6 +153,6 @@ func main() {
 	}
 
 	log.Infof("Providing metrics at %s%s", *listenAddress, *metricPath)
-	log.Debugf("Configured redis addr: %#v", *redisAddr)
+	//log.Debugf("Configured redis addr: %#v", *redisAddr)
 	log.Fatal(http.ListenAndServe(*listenAddress, exp))
 }

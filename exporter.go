@@ -4,6 +4,11 @@ import (
 	"crypto/tls"
 	"errors"
 	"fmt"
+	"github.com/gomodule/redigo/redis"
+	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/promhttp"
+	prom_strutil "github.com/prometheus/prometheus/util/strutil"
+	log "github.com/sirupsen/logrus"
 	"net/http"
 	"net/url"
 	"regexp"
@@ -12,12 +17,6 @@ import (
 	"strings"
 	"sync"
 	"time"
-
-	"github.com/gomodule/redigo/redis"
-	"github.com/prometheus/client_golang/prometheus"
-	"github.com/prometheus/client_golang/prometheus/promhttp"
-	prom_strutil "github.com/prometheus/prometheus/util/strutil"
-	log "github.com/sirupsen/logrus"
 )
 
 type dbKeyPair struct {
@@ -32,6 +31,10 @@ type keyInfo struct {
 // Exporter implements the prometheus.Exporter interface, and exports Redis metrics.
 type Exporter struct {
 	sync.Mutex
+
+	sentinelAddrs []string
+	master        string
+
 	redisAddr string
 	namespace string
 
@@ -145,6 +148,17 @@ func parseKeyArg(keysArgString string) (keys []dbKeyPair, err error) {
 
 func newMetricDescr(namespace string, metricName string, docString string, labels []string) *prometheus.Desc {
 	return prometheus.NewDesc(prometheus.BuildFQName(namespace, "", metricName), docString, labels, nil)
+}
+
+// NewRedisExporter returns a new exporter of Redis metrics, set sentinelAddrs and set the redisAddr as""
+func NewRedisExporterBySentinel(sentinelAddrs []string, master string, opts ExporterOptions) (*Exporter, error) {
+	exp, err := NewRedisExporter("", opts)
+	if err != nil {
+	} else {
+		exp.sentinelAddrs = sentinelAddrs
+		exp.master = master
+	}
+	return exp, err
 }
 
 // NewRedisExporter returns a new exporter of Redis metrics.
@@ -392,7 +406,7 @@ func (e *Exporter) Collect(ch chan<- prometheus.Metric) {
 	defer e.Unlock()
 	e.totalScrapes.Inc()
 
-	if e.redisAddr != "" {
+	if e.redisAddr != "" || len(e.sentinelAddrs) != 0 {
 		start := time.Now().UnixNano()
 		var up float64 = 1
 		if err := e.scrapeRedisHost(ch); err != nil {
@@ -1120,6 +1134,14 @@ func (e *Exporter) connectToRedis() (redis.Conn, error) {
 }
 
 func (e *Exporter) scrapeRedisHost(ch chan<- prometheus.Metric) error {
+
+	masterAddr, err := getMasterAddressBySentinel(e.sentinelAddrs, e.master)
+	if err != nil {
+		log.Errorf("Couldn't get redis master address from sentinel")
+	}
+
+	e.redisAddr = masterAddr
+
 	c, err := e.connectToRedis()
 	if err != nil {
 		log.Errorf("Couldn't connect to redis instance")
@@ -1195,4 +1217,34 @@ func (e *Exporter) scrapeRedisHost(ch chan<- prometheus.Metric) error {
 
 	log.Debugf("scrapeRedisHost() done")
 	return nil
+}
+
+func getMasterAddressBySentinel(sentinelAddresses []string, master string) (masterAddress string, e error) {
+	masterAddress = ""
+	e = errors.New("can not find master address by sentinel")
+	options := []redis.DialOption{
+		redis.DialConnectTimeout(15000000000),
+		redis.DialReadTimeout(15000000000),
+		redis.DialWriteTimeout(15000000000),
+	}
+	for _, x := range sentinelAddresses {
+		conn, e := redis.Dial("tcp", x, options...)
+		if e != nil {
+			e = errors.New("can not dial redis sentinel")
+			continue
+		}
+
+		r, e2 := doRedisCmd(conn, "sentinel", "get-master-addr-by-name", master)
+
+		conn.Close()
+
+		if e2 != nil {
+			continue
+		}
+		s1, _ := redis.String(r.([]interface{})[0], nil)
+		s2, _ := redis.String(r.([]interface{})[1], nil)
+		return s1 + ":" + s2, nil
+	}
+
+	return
 }
