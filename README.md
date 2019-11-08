@@ -11,4 +11,6 @@ redis.master         | REDIS_MASTER                       | Redis master name th
 
 And the flag redis.addr was ignored.
 
+Add a label in metric redis_instance_info named "redis_master_addr" and the value is "<masterIp>:<masterPort>" that the sentinels monitoring
+
 When every scrape request arrives, it will trying to find redis master address by sentinel.addrs and redis.master by command `sentinel get-master-addr-by-name <masterName>`, and then process as before with redis master address as redis.addr.
